@@ -51,6 +51,10 @@ async function run() {
     "SELECT (SELECT COUNT(*) FROM skus) skus, (SELECT COUNT(*) FROM sales_daily) sales"
   );
   console.log("counts:", JSON.stringify(counts.rows[0]));
+  ok =
+    ok &&
+    counts.rows[0].skus === "60" &&
+    counts.rows[0].sales === "5040";
   await app.end();
   console.log(ok ? "SEED OK" : "SEED MISMATCH");
   process.exit(ok ? 0 : 1);

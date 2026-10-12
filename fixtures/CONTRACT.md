@@ -39,4 +39,4 @@ GROUP BY s.sku_id, i.on_hand_units;
 (Note: `CURRENT_DATE` in the query is illustrative — the fixture reference date is 2026-10-12; substitute as needed.)
 
 ## At-risk spread
-~10 of the 60 SKUs are seeded with < 14 days of cover (the "at-risk" set the demo analysis should surface); the rest sit at 15–60 days. Exact at-risk count is printed by the generator — the demo does not hard-code it.
+15 of the 60 SKUs are seeded with < 14 days of cover — 12 regular SKUs plus the 3 canaries (SKU-001/002/003). This is the "at-risk" set the demo analysis should surface; the rest sit at 15–60 days. Exact at-risk count is printed by the generator — the demo does not hard-code it.

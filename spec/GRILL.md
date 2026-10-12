@@ -14,7 +14,7 @@ The ONE demo: Pintu opens the app, clicks **"Run replenishment analysis"**, watc
 
 ## Q3 — Data and migration
 - Synthetic retail dataset, **clearly labeled synthetic** (allowed by the rules): 60 SKUs, 12 weeks of daily sales, on-hand inventory, supplier lead times, unit costs/prices.
-- Lives in `fixtures/` as versioned SQL with a documented contract: fixed reference date, stable SKU IDs, idempotent refresh (never duplicates, never overwrites user edits).
+- Lives in `fixtures/` as versioned SQL with a documented contract: fixed reference date, stable SKU IDs, wholesale replace on refresh (TRUNCATE + reload — user data must live in separate tables, never in the fixture tables).
 - InfiniSynapse connects to the same Postgres as a data source (registered + enabled via API before any task runs).
 - No migration framework — single `schema.sql` + `seed.sql`; the dataset is read-mostly for the demo.
 

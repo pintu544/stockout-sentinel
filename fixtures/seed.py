@@ -88,7 +88,7 @@ SKU_DEFS = [
     ("Lip Balm", "Personal Care", 11, 0.55, 1.30, 9),
     # Frozen
     ("Peas 1kg", "Frozen", 8, 1.00, 2.20, 46),
-    ("Pizza 400g", "Frozen", 16, 1.75, 3.80, 14),
+    ("Pizza 400g", "Frozen", 16, 1.75, 3.80, 20),
     ("Ice Cream 1L", "Frozen", 20, 1.60, 3.50, 22),
     ("Berries 500g", "Frozen", 7, 2.30, 4.90, 31),
     ("Fries 1kg", "Frozen", 13, 1.20, 2.65, 27),

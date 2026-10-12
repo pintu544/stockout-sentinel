@@ -19,7 +19,7 @@ InfiniSynapse Agent → queries Postgres data source → workspace artifacts
 The browser never touches InfiniSynapse or Postgres directly. The BFF holds the API key, opens the SSE stream, and relays progress events to the client via its own SSE endpoint. The agent's final structured output (JSON in the task transcript) is parsed by the BFF into the reorder list; charts render from workspace artifact files.
 
 ## Data model (Postgres)
-- **skus** — `sku_id` (PK, stable e.g. `SKU-001`), `name`, `category`, `unit_cost`, `unit_price`, `supplier_id`, `lead_time_days`
+- **skus** — `sku_id` (PK, stable e.g. `SKU-001`), `name`, `category`, `unit_cost`, `unit_price`, `supplier_id`, `is_canary` (lead time comes from `suppliers.lead_time_days` via JOIN)
 - **inventory** — `sku_id` (FK), `on_hand_units`, `updated_at`
 - **sales_daily** — `sku_id` (FK), `sale_date`, `units_sold` (12 weeks back from the fixture reference date)
 - **suppliers** — `supplier_id` (PK), `name`, `min_order_units`

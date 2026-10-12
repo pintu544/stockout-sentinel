@@ -42,7 +42,7 @@ async function run() {
      GROUP BY s.sku_id, i.on_hand_units ORDER BY s.sku_id`
   );
   console.log("canaries:", JSON.stringify(r.rows));
-  const ok =
+  let ok =
     r.rows.length === 3 &&
     Number(r.rows[0].cover) === 10 &&
     Number(r.rows[1].cover) === 10 &&

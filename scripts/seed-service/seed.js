@@ -18,8 +18,13 @@ const appDbUrl = adminUrl.replace(/\/[^/?]+(\?|$)/, "/stockout_sentinel$1");
 async function run() {
   const admin = new Client({ connectionString: adminUrl });
   await admin.connect();
-  await admin.query("CREATE DATABASE stockout_sentinel");
-  console.log("database ensured");
+  const exists = await admin.query("SELECT 1 FROM pg_database WHERE datname='stockout_sentinel'");
+  if (exists.rowCount === 0) {
+    await admin.query("CREATE DATABASE stockout_sentinel");
+    console.log("database created");
+  } else {
+    console.log("database already exists");
+  }
   await admin.end().catch(() => {});
 
   const app = new Client({ connectionString: appDbUrl });

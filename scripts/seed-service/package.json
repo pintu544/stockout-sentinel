@@ -1,0 +1,1 @@
+{"dependencies":{"pg":"^8.13.1"},"description":"One-off seeder: creates the stockout_sentinel database on Render Postgres and loads fixtures. Delete the Render service after it reports SEED OK.","main":"seed.js","name":"stockout-seed-service","private":true,"scripts":{"start":"node seed.js"},"version":"1.0.0"}

@@ -49,6 +49,13 @@ export async function GET(req: Request) {
           const reader = upstream.body.getReader();
           const decoder = new TextDecoder();
           let buf = "";
+          let finished = false;
+          const emitDone = () => {
+            if (!finished) {
+              finished = true;
+              send(sse(JSON.stringify({ text: "Task complete — fetching result…" }), "done"));
+            }
+          };
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -58,17 +65,20 @@ export async function GET(req: Request) {
             for (const part of parts) {
               const ev = /event:\s*(\S+)/.exec(part)?.[1] ?? "message";
               const data = /data:\s*([\s\S]*)/.exec(part)?.[1] ?? "{}";
-              if (["message.partial", "message.add", "notification", "state.ready"].includes(ev)) {
+              if (["message.partial", "message.add", "notification"].includes(ev)) {
                 send(`event: ${ev}\ndata: ${data}\n\n`);
               }
-              if (ev === "state.ready") {
-                // Upstream signals the task finished; keep the stream open a
-                // beat so the client can fetch the result, then close.
+              if (ev === "state.ready" || ev === "completion_result") {
+                send(`event: ${ev}\ndata: ${data}\n\n`);
+                emitDone();
                 await new Promise((r) => setTimeout(r, 500));
                 return;
               }
             }
           }
+          // Upstream closed the stream: treat as completion regardless of
+          // which event names it used.
+          emitDone();
         }
       } catch (e) {
         send(sse(JSON.stringify({ error: e instanceof Error ? e.message : "stream failed" }), "error"));

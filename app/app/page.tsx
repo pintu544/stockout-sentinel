@@ -1,5 +1,6 @@
 import { connection } from "next/server";
 import { getDashboard } from "@/lib/dashboard";
+import AnalysisPanel from "@/app/components/AnalysisPanel";
 
 export const metadata = { title: "Stockout Sentinel — Inventory Health" };
 
@@ -122,6 +123,8 @@ export default async function DashboardPage() {
           days_of_cover = on-hand ÷ avg daily sales (trailing 28d) · revenue at risk =
           avg daily × price × max(0, 14 − cover) · same formula the AI analysis uses.
         </p>
+
+        <AnalysisPanel />
       </div>
     </main>
   );

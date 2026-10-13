@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "knip": "knip"
   },
   "dependencies": {
     "next": "16.4.0",
@@ -19,6 +20,7 @@
     "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "knip": "^6.41.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5"

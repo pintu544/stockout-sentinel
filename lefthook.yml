@@ -1,0 +1,24 @@
+pre-commit:
+  parallel: true
+  commands:
+    secrets:
+      run: gitleaks protect --staged
+    knip:
+      root: app
+      glob: "*.{ts,tsx}"
+      run: npx knip --production
+
+commit-msg:
+  commands:
+    commitlint:
+      root: app
+      run: npx commitlint --edit {1}
+
+pre-push:
+  commands:
+    typecheck:
+      root: app
+      run: npx tsc --noEmit
+    test:
+      root: app
+      run: npx vitest run

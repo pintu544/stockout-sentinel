@@ -1,5 +1,7 @@
 import { connection } from "next/server";
-import { getDashboard } from "@/lib/dashboard";
+import { getDashboardResilient } from "@/lib/dashboard";
+import { dbPing } from "@/lib/db";
+import { infiniPing } from "@/lib/infini";
 import AnalysisPanel from "@/app/components/AnalysisPanel";
 
 export const metadata = { title: "Stockout Sentinel — Inventory Health" };
@@ -42,20 +44,72 @@ function coverTone(days: number) {
   return "text-emerald-400";
 }
 
+function StatusPill({ label, ok }: { label: string; ok: boolean }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ${
+        ok ? "bg-emerald-500/10 text-emerald-300" : "bg-red-500/10 text-red-300"
+      }`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${ok ? "bg-emerald-400" : "bg-red-400"}`} />
+      {label}
+    </span>
+  );
+}
+
 export default async function DashboardPage() {
   await connection(); // DB-backed: always render on demand, never prerender
-  const d = await getDashboard();
+  const [postgresOk, infiniOk] = await Promise.all([dbPing(), infiniPing()]);
+
+  let outcome;
+  try {
+    outcome = await getDashboardResilient();
+  } catch {
+    // Cold start + Postgres unreachable + no snapshot: honest error, not a 500 page.
+    return (
+      <main className="min-h-screen bg-zinc-950 text-zinc-100">
+        <div className="mx-auto max-w-6xl px-6 py-10">
+          <h1 className="text-2xl font-bold">Stockout Sentinel</h1>
+          <div className="mt-6 rounded-xl border border-red-500/40 bg-red-950/30 p-8 text-center">
+            <p className="text-lg font-semibold text-red-300">Inventory data unavailable</p>
+            <p className="mt-2 text-sm text-zinc-400">
+              Cannot reach the Postgres database and no cached snapshot exists yet.
+              Check DATABASE_URL and reload.
+            </p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+  const d = outcome.data;
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="mx-auto max-w-6xl px-6 py-10">
-        <header className="flex items-baseline justify-between">
+        <header className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold">Stockout Sentinel</h1>
             <p className="mt-1 text-sm text-zinc-500">
               Replenishment desk · synthetic demo data · ref date {d.ref_date}
             </p>
           </div>
+          <div className="flex shrink-0 gap-2 pt-1">
+            <StatusPill label="Postgres" ok={postgresOk} />
+            <StatusPill label="AI service" ok={infiniOk} />
+          </div>
         </header>
+
+        {!infiniOk && (
+          <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
+            Analysis service unavailable — check API key. The inventory dashboard
+            below is live from Postgres.
+          </div>
+        )}
+
+        {outcome.cached && (
+          <div className="mt-4 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm text-zinc-400">
+            Showing cached snapshot from {outcome.cachedAt} — live database unreachable.
+          </div>
+        )}
 
         <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
           <Card label="SKUs tracked" value={String(d.total_skus)} sub="60 synthetic SKUs" />
@@ -124,7 +178,7 @@ export default async function DashboardPage() {
           avg daily × price × max(0, 14 − cover) · same formula the AI analysis uses.
         </p>
 
-        <AnalysisPanel />
+        <AnalysisPanel aiAvailable={infiniOk} />
       </div>
     </main>
   );

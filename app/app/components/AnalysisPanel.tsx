@@ -18,7 +18,7 @@ function SourceBadge({ source }: { source: AnalysisResult["source"] }) {
   );
 }
 
-export default function AnalysisPanel() {
+export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [log, setLog] = useState<string[]>([]);
   const [result, setResult] = useState<AnalysisResult | null>(null);
@@ -26,19 +26,54 @@ export default function AnalysisPanel() {
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
+  // GRILL Q7: task marked failed after 120s without completion.
+  const WATCHDOG_MS = 120_000;
+  const MAX_RECONNECTS = 3;
+
   async function run() {
     setPhase("running");
     setLog([]);
     setResult(null);
     setError(null);
+    let task: string;
+    let conn: string;
+    let mock = false;
     try {
       const res = await fetch("/api/analysis", { method: "POST" });
-      if (!res.ok) throw new Error(`dispatch failed (${res.status})`);
-      const { taskId, connId, mock } = await res.json();
-      setTaskId(taskId);
-      setLog((l) => [...l, mock ? "Dispatched mock analysis." : `Task ${taskId} created.`]);
+      const body = await res.json();
+      if (!res.ok) {
+        if (body.code === "UPSTREAM_BUSY") {
+          throw new Error(
+            "The analysis service is busy or its credits are exhausted. Wait a few minutes and retry."
+          );
+        }
+        throw new Error(body.error ?? `dispatch failed (${res.status})`);
+      }
+      task = body.taskId;
+      conn = body.connId;
+      mock = body.mock;
+      setTaskId(task);
+      setLog((l) => [...l, mock ? "Dispatched mock analysis." : `Task ${task} created.`]);
+    } catch (e) {
+      setPhase("error");
+      setError(e instanceof Error ? e.message : "failed");
+      return;
+    }
 
-      const es = new EventSource(`/api/analysis/stream?connId=${encodeURIComponent(connId)}`);
+    let attempts = 0;
+    let settled = false;
+    const deadline = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        esRef.current?.close();
+        setPhase("error");
+        setError("Analysis timed out after 120s. The service may be overloaded — retry with one click.");
+      }
+    }, WATCHDOG_MS);
+
+    const connect = () => {
+      attempts += 1;
+      const es = new EventSource(`/api/analysis/stream?connId=${encodeURIComponent(conn)}`);
       esRef.current = es;
       es.addEventListener("progress", (e) => {
         try {
@@ -47,26 +82,38 @@ export default function AnalysisPanel() {
         } catch { /* ignore */ }
       });
       const finish = async (ok: boolean, msg?: string) => {
+        if (settled) return;
         es.close();
         if (!ok) {
+          // Auto-reconnect with the same connId (task state lives server-side).
+          if (attempts < MAX_RECONNECTS) {
+            setLog((l) => [...l, `Stream dropped — reconnecting (${attempts}/${MAX_RECONNECTS})…`]);
+            setTimeout(connect, 2000);
+            return;
+          }
+          settled = true;
+          clearTimeout(deadline);
           setPhase("error");
           setError(msg ?? "stream failed");
           return;
         }
-        // Fetch the canonical result (works for mock + real).
-        const r = await fetch(`/api/analysis/${encodeURIComponent(taskId)}/result`);
-        if (!r.ok) throw new Error("result not ready yet — try again in a few seconds");
-        setResult(await r.json());
-        setPhase("done");
+        settled = true;
+        clearTimeout(deadline);
+        try {
+          const r = await fetch(`/api/analysis/${encodeURIComponent(task)}/result`);
+          if (!r.ok) throw new Error("result not ready yet — try again in a few seconds");
+          setResult(await r.json());
+          setPhase("done");
+        } catch (e) {
+          setPhase("error");
+          setError(e instanceof Error ? e.message : "failed");
+        }
       };
       es.addEventListener("done", () => finish(true));
-      es.addEventListener("state.ready", () => finish(true));
       es.addEventListener("error", () => finish(false, "stream error"));
       es.onerror = () => finish(false, "stream error");
-    } catch (e) {
-      setPhase("error");
-      setError(e instanceof Error ? e.message : "failed");
-    }
+    };
+    connect();
   }
 
   const maxCover = Math.max(14, ...((result?.items ?? []).map((i) => i.days_of_cover)));
@@ -80,16 +127,36 @@ export default function AnalysisPanel() {
 
       {phase === "idle" && (
         <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 text-center">
-          <p className="text-sm text-zinc-400">
-            Let the InfiniSynapse agent analyze demand, lead times and stock levels,
-            then rank what to reorder.
-          </p>
-          <button
-            onClick={run}
-            className="mt-4 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500"
-          >
-            Run analysis
-          </button>
+          {!aiAvailable ? (
+            <>
+              <p className="text-sm font-semibold text-amber-300">
+                Analysis service unavailable — check API key
+              </p>
+              <p className="mt-1 text-sm text-zinc-400">
+                The inventory dashboard above is live from Postgres; AI analysis is
+                disabled until the InfiniSynapse service is reachable.
+              </p>
+              <button
+                disabled
+                className="mt-4 cursor-not-allowed rounded-lg bg-zinc-800 px-5 py-2.5 text-sm font-semibold text-zinc-500"
+              >
+                Run analysis
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-zinc-400">
+                Let the InfiniSynapse agent analyze demand, lead times and stock levels,
+                then rank what to reorder.
+              </p>
+              <button
+                onClick={run}
+                className="mt-4 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500"
+              >
+                Run analysis
+              </button>
+            </>
+          )}
         </div>
       )}
 

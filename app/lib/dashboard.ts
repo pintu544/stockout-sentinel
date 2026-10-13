@@ -36,3 +36,25 @@ export async function getDashboard(): Promise<DashboardData> {
     low_cover,
   };
 }
+
+// In-memory last-good snapshot (GRILL Q7): if Postgres becomes unreachable,
+// serve the last good render with its timestamp instead of a blank 500.
+// Note: per serverless instance — a cold start with no snapshot still errors.
+let lastGood: { at: string; data: DashboardData } | null = null;
+
+export interface DashboardOutcome {
+  data: DashboardData;
+  cached: boolean;
+  cachedAt: string | null;
+}
+
+export async function getDashboardResilient(): Promise<DashboardOutcome> {
+  try {
+    const data = await getDashboard();
+    lastGood = { at: new Date().toISOString(), data };
+    return { data, cached: false, cachedAt: null };
+  } catch (e) {
+    if (lastGood) return { data: lastGood.data, cached: true, cachedAt: lastGood.at };
+    throw e;
+  }
+}

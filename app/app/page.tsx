@@ -1,4 +1,3 @@
-import { connection } from "next/server";
 import { getDashboardResilient } from "@/lib/dashboard";
 import { dbPing } from "@/lib/db";
 import { infiniPing } from "@/lib/infini";
@@ -58,8 +57,14 @@ function StatusPill({ label, ok }: { label: string; ok: boolean }) {
 }
 
 export default async function DashboardPage() {
-  await connection(); // DB-backed: always render on demand, never prerender
-  const [postgresOk, infiniOk] = await Promise.all([dbPing(), infiniPing()]);
+  // Health pings must never gate first paint: 5s cap each, then render anyway.
+  // (Without this, a hung InfiniSynapse ping would blow the 1.5s p95 NFR.)
+  const withTimeout = <T,>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
+    Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
+  const [postgresOk, infiniOk] = await Promise.all([
+    withTimeout(dbPing(), 5000, false),
+    withTimeout(infiniPing(), 5000, false),
+  ]);
 
   let outcome;
   try {
@@ -149,7 +154,7 @@ export default async function DashboardPage() {
             </thead>
             <tbody>
               {d.low_cover.map((r) => (
-                <tr key={r.sku_id} className="border-t border-zinc-800/60 hover:bg-zinc-900/60">
+                <tr key={r.sku_id} id={`sku-${r.sku_id}`} className="border-t border-zinc-800/60 hover:bg-zinc-900/60 scroll-mt-24">
                   <td className="px-4 py-2.5 font-mono text-xs">
                     {r.sku_id}
                     {r.is_canary && (

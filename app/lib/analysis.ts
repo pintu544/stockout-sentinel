@@ -21,6 +21,9 @@ export interface AnalysisResult {
   ref_date: string;
   items: AnalysisItem[];
   source: "mock" | "ai";
+  /** Set when the transcript had no parseable result block (DESIGN fallback). */
+  unparseable?: boolean;
+  transcript?: string;
 }
 
 const isMock = () => process.env.MOCK_ANALYSIS !== "false";
@@ -86,7 +89,47 @@ export async function mockResult(): Promise<AnalysisResult> {
   return { ref_date: REF_DATE, items, source: "mock" };
 }
 
-/** Extract the fenced JSON result block from a real task's transcript. */
+/** Coerce one raw item; return null when it's beyond repair (dropped, counted). */
+function coerceItem(raw: unknown): AnalysisItem | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const num = (v: unknown): number | null => {
+    const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
+    return Number.isFinite(n) ? n : null;
+  };
+  const sku_id = typeof r.sku_id === "string" ? r.sku_id : null;
+  const name = typeof r.name === "string" ? r.name : sku_id;
+  const days_of_cover = num(r.days_of_cover);
+  const stockout_date = typeof r.stockout_date === "string" ? r.stockout_date : null;
+  const revenue_at_risk = num(r.revenue_at_risk);
+  const suggested_qty = num(r.suggested_qty);
+  const reason = typeof r.reason === "string" ? r.reason : "";
+  if (
+    !sku_id || !name || days_of_cover === null || !stockout_date ||
+    revenue_at_risk === null || suggested_qty === null
+  ) {
+    return null;
+  }
+  return {
+    sku_id, name, days_of_cover, stockout_date, revenue_at_risk,
+    suggested_qty: Math.round(suggested_qty), reason,
+  };
+}
+
+function unparseableFallback(full: string): AnalysisResult {
+  return {
+    ref_date: "", items: [], source: "ai",
+    unparseable: true, transcript: full.slice(0, 8000),
+  };
+}
+
+/**
+ * Extract the result from a task transcript.
+ * - Takes the LAST fenced json block (agents often show an example first).
+ * - Validates + coerces every item; drops unrepairable rows.
+ * - Sorts by revenue_at_risk descending (rank = position).
+ * - Falls back to the raw transcript when nothing parseable exists (DESIGN risk #1).
+ */
 export function parseResultBlock(messages: unknown[]): AnalysisResult | null {
   const texts: string[] = [];
   for (const m of messages as Array<{ text?: string; message?: { text?: string } }>) {
@@ -94,14 +137,28 @@ export function parseResultBlock(messages: unknown[]): AnalysisResult | null {
     if (typeof m?.message?.text === "string") texts.push(m.message.text);
   }
   const full = texts.join("\n");
-  const match = full.match(/```json\s*([\s\S]*?)\s*```/);
-  if (!match) return null;
+  const blocks = [...full.matchAll(/```json\s*([\s\S]*?)\s*```/g)];
+  if (blocks.length === 0) {
+    return full.trim() ? unparseableFallback(full) : null;
+  }
   try {
-    const parsed = JSON.parse(match[1]) as { ref_date: string; items: AnalysisItem[] };
-    if (!Array.isArray(parsed.items)) return null;
-    return { ref_date: parsed.ref_date, items: parsed.items, source: "ai" };
+    const parsed = JSON.parse(blocks[blocks.length - 1][1]) as {
+      ref_date?: string;
+      items?: unknown[];
+    };
+    if (!Array.isArray(parsed.items)) return unparseableFallback(full);
+    const items = parsed.items
+      .map(coerceItem)
+      .filter((i): i is AnalysisItem => i !== null)
+      .sort((a, b) => b.revenue_at_risk - a.revenue_at_risk);
+    if (items.length === 0) return unparseableFallback(full);
+    return {
+      ref_date: typeof parsed.ref_date === "string" ? parsed.ref_date : "",
+      items,
+      source: "ai",
+    };
   } catch {
-    return null;
+    return unparseableFallback(full);
   }
 }
 

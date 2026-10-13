@@ -1,9 +1,32 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import type { AnalysisItem, AnalysisResult } from "@/lib/analysis";
 
 type Phase = "idle" | "running" | "done" | "error";
+
+/** Catches render crashes from agent-shaped data so the whole panel doesn't die. */
+class ResultsBoundary extends Component<{ children: ReactNode }, { crashed: boolean; what: string }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { crashed: false, what: "" };
+  }
+  static getDerivedStateFromError(e: unknown) {
+    return { crashed: true, what: e instanceof Error ? e.message : String(e) };
+  }
+  render() {
+    if (this.state.crashed) {
+      return (
+        <div className="mt-3 rounded-xl border border-red-500/40 bg-red-950/30 p-6 text-center">
+          <p className="text-sm font-semibold text-red-300">Couldn't render this result</p>
+          <p className="mt-1 font-mono text-xs text-zinc-500">{this.state.what}</p>
+          <p className="mt-2 text-sm text-zinc-400">The analysis data was malformed — try running it again.</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function SourceBadge({ source }: { source: AnalysisResult["source"] }) {
   const label = source === "ai" ? "AI analysis" : "Mock analysis";
@@ -25,19 +48,45 @@ export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean })
   const [taskId, setTaskId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
+  const settledRef = useRef(false);
+  const [pendingReconnect, setPendingReconnect] = useState<{ taskId: string; connId: string } | null>(null);
 
   // GRILL Q7: task marked failed after 120s without completion.
   const WATCHDOG_MS = 120_000;
   const MAX_RECONNECTS = 3;
+  const STORAGE_KEY = "stockout-sentinel:analysis";
+
+  // T2.3 done-means: a refresh mid-run reconnects without dispatching a duplicate.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw) as { taskId: string; connId: string; at: number };
+        if (saved.taskId && saved.connId && Date.now() - saved.at < WATCHDOG_MS) {
+          setTaskId(saved.taskId);
+          setPendingReconnect({ taskId: saved.taskId, connId: saved.connId });
+        } else {
+          sessionStorage.removeItem(STORAGE_KEY);
+        }
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  function remember(task: string, conn: string) {
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ taskId: task, connId: conn, at: Date.now() }));
+    } catch { /* ignore */ }
+  }
+  function forget() {
+    try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+  }
 
   async function run() {
     setPhase("running");
     setLog([]);
     setResult(null);
     setError(null);
-    let task: string;
-    let conn: string;
-    let mock = false;
+    setPendingReconnect(null);
     try {
       const res = await fetch("/api/analysis", { method: "POST" });
       const body = await res.json();
@@ -47,24 +96,46 @@ export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean })
             "The analysis service is busy or its credits are exhausted. Wait a few minutes and retry."
           );
         }
+        if (body.code === "THROTTLED") {
+          throw new Error(body.error ?? "Too many requests — wait a minute and retry.");
+        }
         throw new Error(body.error ?? `dispatch failed (${res.status})`);
       }
-      task = body.taskId;
-      conn = body.connId;
-      mock = body.mock;
+      const task: string = body.taskId;
+      const conn: string = body.connId;
       setTaskId(task);
-      setLog((l) => [...l, mock ? "Dispatched mock analysis." : `Task ${task} created.`]);
+      remember(task, conn);
+      setLog((l) => [...l, body.mock ? "Dispatched mock analysis." : `Task ${task} created.`]);
+      attach(task, conn);
     } catch (e) {
       setPhase("error");
       setError(e instanceof Error ? e.message : "failed");
-      return;
     }
+  }
 
+  /** Re-attach to an in-flight analysis after a page refresh (no duplicate dispatch). */
+  function reconnect() {
+    if (!pendingReconnect) return;
+    const { taskId: task, connId: conn } = pendingReconnect;
+    setPendingReconnect(null);
+    setPhase("running");
+    setLog([`Reconnecting to task ${task}…`]);
+    setResult(null);
+    setError(null);
+    attach(task, conn);
+  }
+
+  function attach(task: string, conn: string) {
     let attempts = 0;
-    let settled = false;
+    settledRef.current = false;
+    const settle = () => {
+      settledRef.current = true;
+      clearTimeout(deadline);
+      forget();
+    };
     const deadline = setTimeout(() => {
-      if (!settled) {
-        settled = true;
+      if (!settledRef.current) {
+        settle();
         esRef.current?.close();
         setPhase("error");
         setError("Analysis timed out after 120s. The service may be overloaded — retry with one click.");
@@ -72,6 +143,7 @@ export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean })
     }, WATCHDOG_MS);
 
     const connect = () => {
+      if (settledRef.current) return;
       attempts += 1;
       const es = new EventSource(`/api/analysis/stream?connId=${encodeURIComponent(conn)}`);
       esRef.current = es;
@@ -82,27 +154,26 @@ export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean })
         } catch { /* ignore */ }
       });
       const finish = async (ok: boolean, msg?: string) => {
-        if (settled) return;
+        if (settledRef.current) return;
         es.close();
         if (!ok) {
           // Auto-reconnect with the same connId (task state lives server-side).
           if (attempts < MAX_RECONNECTS) {
             setLog((l) => [...l, `Stream dropped — reconnecting (${attempts}/${MAX_RECONNECTS})…`]);
-            setTimeout(connect, 2000);
+            setTimeout(() => { if (!settledRef.current) connect(); }, 2000);
             return;
           }
-          settled = true;
-          clearTimeout(deadline);
+          settle();
           setPhase("error");
           setError(msg ?? "stream failed");
           return;
         }
-        settled = true;
-        clearTimeout(deadline);
+        settle();
         try {
           const r = await fetch(`/api/analysis/${encodeURIComponent(task)}/result`);
-          if (!r.ok) throw new Error("result not ready yet — try again in a few seconds");
-          setResult(await r.json());
+          const body = await r.json();
+          if (!r.ok) throw new Error(body.error ?? "result not ready yet — try again in a few seconds");
+          setResult(body);
           setPhase("done");
         } catch (e) {
           setPhase("error");
@@ -142,6 +213,26 @@ export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean })
               >
                 Run analysis
               </button>
+            </>
+          ) : pendingReconnect ? (
+            <>
+              <p className="text-sm text-zinc-400">
+                An analysis was still running when the page reloaded.
+              </p>
+              <div className="mt-4 flex justify-center gap-3">
+                <button
+                  onClick={reconnect}
+                  className="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500"
+                >
+                  Reconnect to running analysis
+                </button>
+                <button
+                  onClick={() => { setPendingReconnect(null); forget(); }}
+                  className="rounded-lg bg-zinc-800 px-5 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700"
+                >
+                  Discard
+                </button>
+              </div>
             </>
           ) : (
             <>
@@ -186,7 +277,30 @@ export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean })
         </div>
       )}
 
-      {phase === "done" && result && result.items.length === 0 && (
+      {phase === "done" && result && result.unparseable && (
+        <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-950/20 p-6">
+          <p className="text-sm font-semibold text-amber-300">
+            The agent finished, but its result wasn't machine-readable
+          </p>
+          <p className="mt-1 text-sm text-zinc-400">
+            Showing the raw transcript instead — the numbers below were not parsed into the reorder table.
+          </p>
+          <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-zinc-900 p-4 font-mono text-xs text-zinc-300">
+            {result.transcript}
+          </pre>
+          <div className="mt-3 flex items-center justify-between">
+            <SourceBadge source={result.source} />
+            <button
+              onClick={run}
+              className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700"
+            >
+              Re-run
+            </button>
+          </div>
+        </div>
+      )}
+
+      {phase === "done" && result && !result.unparseable && result.items.length === 0 && (
         <div className="mt-3 rounded-xl border border-emerald-500/40 bg-emerald-950/30 p-6 text-center">
           <p className="text-lg font-semibold text-emerald-300">All clear ✓</p>
           <p className="mt-1 text-sm text-zinc-400">
@@ -198,7 +312,8 @@ export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean })
         </div>
       )}
 
-      {phase === "done" && result && result.items.length > 0 && (
+      {phase === "done" && result && !result.unparseable && result.items.length > 0 && (
+        <ResultsBoundary>
         <div className="mt-3">
           <div className="flex items-center justify-between">
             <p className="text-sm text-zinc-400">
@@ -211,6 +326,10 @@ export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean })
               Re-run
             </button>
           </div>
+          <p className="mt-2 rounded-lg border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-xs text-zinc-500">
+            Review before ordering — these are AI-generated recommendations from synthetic
+            demo data, not purchase orders. Verify quantities against your supplier terms.
+          </p>
 
           {/* Coverage chart (CSS bars) */}
           <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
@@ -254,7 +373,9 @@ export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean })
                   <tr key={it.sku_id} className="border-t border-zinc-800/60 hover:bg-zinc-900/60">
                     <td className="px-4 py-2.5 text-zinc-500">{i + 1}</td>
                     <td className="px-4 py-2.5">
-                      <span className="font-mono text-xs">{it.sku_id}</span>
+                      <a href={`#sku-${it.sku_id}`} className="font-mono text-xs text-zinc-100 hover:text-emerald-300 hover:underline">
+                        {it.sku_id}
+                      </a>
                       <span className="ml-2 text-zinc-300">{it.name}</span>
                     </td>
                     <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-amber-400">
@@ -275,14 +396,17 @@ export default function AnalysisPanel({ aiAvailable }: { aiAvailable: boolean })
           </div>
           <div className="mt-3 flex items-center justify-between">
             <SourceBadge source={result.source} />
-            <a
-              href={taskId ? `/api/export.csv?taskId=${encodeURIComponent(taskId)}` : "#"}
-              className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700"
-            >
-              Export CSV
-            </a>
+            {taskId && (
+              <a
+                href={`/api/export.csv?taskId=${encodeURIComponent(taskId)}`}
+                className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700"
+              >
+                Export CSV
+              </a>
+            )}
           </div>
         </div>
+        </ResultsBoundary>
       )}
     </section>
   );

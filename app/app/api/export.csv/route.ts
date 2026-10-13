@@ -3,7 +3,10 @@ import { mockResult, realResult } from "@/lib/analysis";
 const isMock = () => process.env.MOCK_ANALYSIS !== "false";
 
 function csvCell(v: string | number): string {
-  const s = String(v);
+  let s = String(v);
+  // Formula injection guard: agent-controlled text starting with = + - @
+  // becomes a live formula in Excel — neutralize with a leading quote.
+  if (/^[=+\-@]/.test(s)) s = "'" + s;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -37,10 +40,12 @@ export async function GET(req: Request) {
         .join(",")
     );
     const csv = [header.join(","), ...lines].join("\n") + "\n";
+    // ref_date comes from the agent — sanitize before header construction.
+    const safeDate = (result.ref_date || "result").replace(/[^0-9a-z-]/gi, "");
     return new Response(csv, {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename="stockout-sentinel-reorder-${result.ref_date}.csv"`,
+        "Content-Disposition": `attachment; filename="stockout-sentinel-reorder-${safeDate}.csv"`,
       },
     });
   } catch (e) {

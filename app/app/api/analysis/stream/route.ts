@@ -43,7 +43,12 @@ export async function GET(req: Request) {
           const key = process.env.INFINISYNAPSE_API_KEY;
           const upstream = await fetch(
             `${BASE}/api/ai/events?connId=${encodeURIComponent(connId)}`,
-            { headers: { Authorization: `Bearer ${key}`, Accept: "text/event-stream", "x-lang": "en" } }
+            {
+              headers: { Authorization: `Bearer ${key}`, Accept: "text/event-stream", "x-lang": "en" },
+              // Don't let a hung upstream hold the serverless function forever;
+              // the client's 120s watchdog + reconnect covers the UX side.
+              signal: AbortSignal.timeout(150_000),
+            }
           );
           if (!upstream.ok || !upstream.body) throw new Error(`upstream ${upstream.status}`);
           const reader = upstream.body.getReader();

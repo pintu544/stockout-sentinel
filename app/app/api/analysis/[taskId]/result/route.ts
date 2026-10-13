@@ -15,11 +15,14 @@ export async function GET(
     const { taskId } = await params;
     const result = isMock() ? await mockResult() : await realResult(taskId);
     if (!result) {
+      // Empty transcript: the analysis is genuinely still running.
       return NextResponse.json(
-        { error: "no parseable result yet — the analysis may still be running" },
+        { error: "no transcript yet — the analysis may still be running" },
         { status: 404 }
       );
     }
+    // result may carry unparseable:true + transcript (DESIGN fallback) —
+    // the client renders the raw transcript instead of dying.
     return NextResponse.json(result);
   } catch (e) {
     return NextResponse.json(

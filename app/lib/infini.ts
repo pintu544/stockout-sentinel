@@ -2,6 +2,11 @@
 
 const BASE = process.env.INFINISYNAPSE_BASE_URL ?? "https://app.infinisynapse.com";
 
+// Per-request ceiling for the JSON API calls below. Upstream answers in
+// ~1-2s when responsive; 20s is generous headroom, well inside the UI's
+// 120s watchdog, and short enough that /api/health stays a quick pre-flight.
+const REQUEST_TIMEOUT_MS = 20_000;
+
 function headers(): Record<string, string> {
   const key = process.env.INFINISYNAPSE_API_KEY;
   if (!key) throw new Error("INFINISYNAPSE_API_KEY is not set");
@@ -19,10 +24,24 @@ interface Envelope<T> {
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: { ...headers(), ...(init?.headers ?? {}) },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...init,
+      headers: { ...headers(), ...(init?.headers ?? {}) },
+      // Bound every upstream call: a hung InfiniSynapse request must not hold
+      // the serverless function open (observed 2026-10-20: POST /api/ai/message
+      // from Vercel never returned, hanging /api/analysis past 60s). Callers
+      // may pass their own signal; the SSE relay does its own fetch and is
+      // not affected by this timeout.
+      signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (e) {
+    if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
+      throw new Error(`InfiniSynapse ${path} -> timed out after ${REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw e;
+  }
   if (!res.ok) throw new Error(`InfiniSynapse ${path} -> HTTP ${res.status}`);
   const body = (await res.json()) as Envelope<T>;
   if (body.code !== 200)

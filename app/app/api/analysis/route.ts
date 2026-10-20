@@ -34,8 +34,9 @@ export async function POST(req: Request) {
     const msg = e instanceof Error ? e.message : "dispatch failed";
     // InfiniSynapse reports overload as HTTP 500 "Server is busy" — surface it
     // as a distinct code so the UI can say "busy or credits exhausted" (GRILL Q7)
-    // instead of a generic error.
-    const busy = /500|busy/i.test(msg);
+    // instead of a generic error. An upstream timeout is the same user-facing
+    // situation (their side is not answering), so it takes the same code.
+    const busy = /500|busy|timed out/i.test(msg);
     return NextResponse.json(
       { error: msg, code: busy ? "UPSTREAM_BUSY" : "DISPATCH_FAILED" },
       { status: busy ? 503 : 500 }

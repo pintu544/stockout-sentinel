@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "knip": "knip",
-    "prepare": "lefthook install",
+    "prepare": "lefthook install || true",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
